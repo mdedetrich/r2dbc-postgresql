@@ -31,39 +31,34 @@ import org.locationtech.jts.io.WKBWriter;
 import org.locationtech.jts.io.WKTWriter;
 import reactor.core.publisher.Mono;
 
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 
 import static io.r2dbc.postgresql.client.EncodedParameter.NULL_VALUE;
 import static io.r2dbc.postgresql.message.Format.FORMAT_BINARY;
 import static io.r2dbc.postgresql.message.Format.FORMAT_TEXT;
 
 /**
- * PostGIS codec using {@link WKBReader} and {@link WKTWriter}, shared between the {@code geometry} and {@code geography} Postgres types.
- * <p>Both types decode to and encode from the same JTS {@link Geometry} representation, so a single codec instance handles both, the same way {@link StringCodec} handles {@code text} and
- * {@code varchar} alike. Values encoded without an explicit target type default to the {@code geometry} OID; Postgres applies its own {@code geometry -> geography} implicit cast where a
- * {@code geography} value is actually required.
+ * PostGIS codec using {@link WKBReader} and {@link WKTWriter}.
  */
-final class PostgisCodec implements Codec<Geometry>, CodecMetadata {
+final class PostgisGeometryCodec implements Codec<Geometry>, CodecMetadata {
 
     private static final Class<Geometry> TYPE = Geometry.class;
 
-    private final GeometryFactory geometryFactory = new GeometryFactory();
+    private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
 
-    private final int geometryOid;
+    private final int oid;
 
-    private final int geographyOid;
+    private final boolean encoder;
 
     /**
-     * Create a new {@link PostgisCodec}.
+     * Create a new {@link PostgisGeometryCodec}.
      *
-     * @param geometryOid  the OID of the {@code geometry} type, used as the default encoding target
-     * @param geographyOid the OID of the {@code geography} type, or {@link PostgresTypes#NO_SUCH_TYPE} if not present
+     * @param oid     the OID of the PostGIS type
+     * @param encoder whether this codec encodes {@link Geometry} values
      */
-    PostgisCodec(int geometryOid, int geographyOid) {
-        this.geometryOid = geometryOid;
-        this.geographyOid = geographyOid;
+    PostgisGeometryCodec(int oid, boolean encoder) {
+        this.oid = oid;
+        this.encoder = encoder;
     }
 
     @Override
@@ -72,21 +67,21 @@ final class PostgisCodec implements Codec<Geometry>, CodecMetadata {
         Assert.requireNonNull(type, "type must not be null");
 
         // Object = Geometry or Geometry = type (Geometry subtype)
-        return (dataType == this.geometryOid || dataType == this.geographyOid) && (type.isAssignableFrom(TYPE) || TYPE.isAssignableFrom(type));
+        return dataType == this.oid && (type.isAssignableFrom(TYPE) || TYPE.isAssignableFrom(type));
     }
 
     @Override
     public boolean canEncode(Object value) {
         Assert.requireNonNull(value, "value must not be null");
 
-        return TYPE.isInstance(value);
+        return this.encoder && TYPE.isInstance(value);
     }
 
     @Override
     public boolean canEncodeNull(Class<?> type) {
         Assert.requireNonNull(type, "type must not be null");
 
-        return TYPE.isAssignableFrom(type);
+        return this.encoder && TYPE.isAssignableFrom(type);
     }
 
     @Override
@@ -98,7 +93,7 @@ final class PostgisCodec implements Codec<Geometry>, CodecMetadata {
         Assert.isTrue(format == FORMAT_TEXT, "format must be FORMAT_TEXT");
 
         try {
-            return new WKBReader(this.geometryFactory).read(WKBReader.hexToBytes(ByteBufUtils.decode(buffer)));
+            return new WKBReader(GEOMETRY_FACTORY).read(WKBReader.hexToBytes(ByteBufUtils.decode(buffer)));
         } catch (ParseException e) {
             throw new IllegalArgumentException(e);
         }
@@ -106,7 +101,7 @@ final class PostgisCodec implements Codec<Geometry>, CodecMetadata {
 
     @Override
     public EncodedParameter encode(Object value) {
-        return encode(value, this.geometryOid);
+        return encode(value, this.oid);
     }
 
     @Override
@@ -123,7 +118,7 @@ final class PostgisCodec implements Codec<Geometry>, CodecMetadata {
 
     @Override
     public EncodedParameter encodeNull() {
-        return new EncodedParameter(FORMAT_BINARY, this.geometryOid, NULL_VALUE);
+        return new EncodedParameter(FORMAT_BINARY, this.oid, NULL_VALUE);
     }
 
     @Override
@@ -133,14 +128,7 @@ final class PostgisCodec implements Codec<Geometry>, CodecMetadata {
 
     @Override
     public Iterable<PostgresTypeIdentifier> getDataTypes() {
-        List<PostgresTypeIdentifier> dataTypes = new ArrayList<>(2);
-        dataTypes.add(AbstractCodec.getDataType(this.geometryOid));
-
-        if (this.geographyOid != PostgresTypes.NO_SUCH_TYPE) {
-            dataTypes.add(AbstractCodec.getDataType(this.geographyOid));
-        }
-
-        return Collections.unmodifiableList(dataTypes);
+        return Collections.singleton(AbstractCodec.getDataType(this.oid));
     }
 
 }
